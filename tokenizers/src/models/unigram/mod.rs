@@ -1,6 +1,7 @@
 //! [Unigram](https://arxiv.org/abs/1804.10959) model.
 mod lattice;
 mod model;
+mod multilingual;
 mod serialization;
 mod trainer;
 mod trie;
