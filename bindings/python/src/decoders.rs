@@ -8,6 +8,7 @@ use serde::de::Error;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tk::decoders::bpe::BPEDecoder;
 use tk::decoders::byte_level::ByteLevel;
+use tk::decoders::ctc::CTC;
 use tk::decoders::metaspace::Metaspace;
 use tk::decoders::wordpiece::WordPiece;
 use tk::decoders::DecoderWrapper;
@@ -43,6 +44,7 @@ impl PyDecoder {
                 DecoderWrapper::WordPiece(_) => Py::new(py, (PyWordPieceDec {}, base))?.into_py(py),
                 DecoderWrapper::ByteLevel(_) => Py::new(py, (PyByteLevelDec {}, base))?.into_py(py),
                 DecoderWrapper::BPE(_) => Py::new(py, (PyBPEDecoder {}, base))?.into_py(py),
+                DecoderWrapper::CTC(_) => Py::new(py, (PyCTCDecoder {}, base))?.into_py(py),
             },
         })
     }
@@ -57,11 +59,9 @@ impl Decoder for PyDecoder {
 #[pymethods]
 impl PyDecoder {
     #[staticmethod]
-    fn custom(decoder: PyObject) -> PyResult<Self> {
-        let decoder = PyDecoderWrapper::Custom(
-            CustomDecoder::new(decoder).map(|d| Arc::new(RwLock::new(d)))?,
-        );
-        Ok(PyDecoder::new(decoder))
+    fn custom(decoder: PyObject) -> Self {
+        let decoder = PyDecoderWrapper::Custom(Arc::new(RwLock::new(CustomDecoder::new(decoder))));
+        PyDecoder::new(decoder)
     }
 
     fn __getstate__(&self, py: Python) -> PyResult<PyObject> {
@@ -147,8 +147,8 @@ pub struct PyByteLevelDec {}
 #[pymethods]
 impl PyByteLevelDec {
     #[new]
-    fn new() -> PyResult<(Self, PyDecoder)> {
-        Ok((PyByteLevelDec {}, ByteLevel::default().into()))
+    fn new() -> (Self, PyDecoder) {
+        (PyByteLevelDec {}, ByteLevel::default().into())
     }
 }
 
@@ -188,8 +188,8 @@ impl PyWordPieceDec {
 
     #[new]
     #[args(prefix = "String::from(\"##\")", cleanup = "true")]
-    fn new(prefix: String, cleanup: bool) -> PyResult<(Self, PyDecoder)> {
-        Ok((PyWordPieceDec {}, WordPiece::new(prefix, cleanup).into()))
+    fn new(prefix: String, cleanup: bool) -> (Self, PyDecoder) {
+        (PyWordPieceDec {}, WordPiece::new(prefix, cleanup).into())
     }
 }
 
@@ -230,11 +230,11 @@ impl PyMetaspaceDec {
 
     #[new]
     #[args(replacement = "PyChar('▁')", add_prefix_space = "true")]
-    fn new(replacement: PyChar, add_prefix_space: bool) -> PyResult<(Self, PyDecoder)> {
-        Ok((
+    fn new(replacement: PyChar, add_prefix_space: bool) -> (Self, PyDecoder) {
+        (
             PyMetaspaceDec {},
             Metaspace::new(replacement.0, add_prefix_space).into(),
-        ))
+        )
     }
 }
 
@@ -261,8 +261,67 @@ impl PyBPEDecoder {
 
     #[new]
     #[args(suffix = "String::from(\"</w>\")")]
-    fn new(suffix: String) -> PyResult<(Self, PyDecoder)> {
-        Ok((PyBPEDecoder {}, BPEDecoder::new(suffix).into()))
+    fn new(suffix: String) -> (Self, PyDecoder) {
+        (PyBPEDecoder {}, BPEDecoder::new(suffix).into())
+    }
+}
+
+/// CTC Decoder
+///
+/// Args:
+///     pad_token (:obj:`str`, `optional`, defaults to :obj:`<pad>`):
+///         The pad token used by CTC to delimit a new token.
+///     word_delimiter_token (:obj:`str`, `optional`, defaults to :obj:`|`):
+///         The word delimiter token. It will be replaced by a <space>
+///     cleanup (:obj:`bool`, `optional`, defaults to :obj:`True`):
+///         Whether to cleanup some tokenization artifacts.
+///         Mainly spaces before punctuation, and some abbreviated english forms.
+#[pyclass(extends=PyDecoder, module = "tokenizers.decoders", name=CTC)]
+#[text_signature = "(self, pad_token=\"<pad>\", word_delimiter_token=\"|\", cleanup=True)"]
+pub struct PyCTCDecoder {}
+#[pymethods]
+impl PyCTCDecoder {
+    #[getter]
+    fn get_pad_token(self_: PyRef<Self>) -> String {
+        getter!(self_, CTC, pad_token.clone())
+    }
+
+    #[setter]
+    fn set_pad_token(self_: PyRef<Self>, pad_token: String) {
+        setter!(self_, CTC, pad_token, pad_token);
+    }
+
+    #[getter]
+    fn get_word_delimiter_token(self_: PyRef<Self>) -> String {
+        getter!(self_, CTC, word_delimiter_token.clone())
+    }
+
+    #[setter]
+    fn set_word_delimiter_token(self_: PyRef<Self>, word_delimiter_token: String) {
+        setter!(self_, CTC, word_delimiter_token, word_delimiter_token);
+    }
+
+    #[getter]
+    fn get_cleanup(self_: PyRef<Self>) -> bool {
+        getter!(self_, CTC, cleanup)
+    }
+
+    #[setter]
+    fn set_cleanup(self_: PyRef<Self>, cleanup: bool) {
+        setter!(self_, CTC, cleanup, cleanup);
+    }
+
+    #[new]
+    #[args(
+        pad_token = "String::from(\"<pad>\")",
+        word_delimiter_token = "String::from(\"|\")",
+        cleanup = "true"
+    )]
+    fn new(pad_token: String, word_delimiter_token: String, cleanup: bool) -> (Self, PyDecoder) {
+        (
+            PyCTCDecoder {},
+            CTC::new(pad_token, word_delimiter_token, cleanup).into(),
+        )
     }
 }
 
@@ -272,8 +331,8 @@ pub(crate) struct CustomDecoder {
 }
 
 impl CustomDecoder {
-    pub(crate) fn new(inner: PyObject) -> PyResult<Self> {
-        Ok(CustomDecoder { inner })
+    pub(crate) fn new(inner: PyObject) -> Self {
+        CustomDecoder { inner }
     }
 }
 
@@ -387,8 +446,7 @@ mod test {
             let obj: PyObject = Py::new(py, py_msp).unwrap().into_py(py);
             obj
         });
-        let py_seq =
-            PyDecoderWrapper::Custom(Arc::new(RwLock::new(CustomDecoder::new(obj).unwrap())));
+        let py_seq = PyDecoderWrapper::Custom(Arc::new(RwLock::new(CustomDecoder::new(obj))));
         assert!(serde_json::to_string(&py_seq).is_err());
     }
 }

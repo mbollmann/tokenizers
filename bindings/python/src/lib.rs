@@ -1,4 +1,5 @@
 #![warn(clippy::all)]
+#![allow(clippy::upper_case_acronyms)]
 
 extern crate tokenizers as tk;
 
@@ -86,6 +87,7 @@ fn decoders(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<decoders::PyWordPieceDec>()?;
     m.add_class::<decoders::PyMetaspaceDec>()?;
     m.add_class::<decoders::PyBPEDecoder>()?;
+    m.add_class::<decoders::PyCTCDecoder>()?;
     Ok(())
 }
 
