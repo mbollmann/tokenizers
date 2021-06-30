@@ -9,3 +9,4 @@ mod trie;
 pub use lattice::*;
 pub use model::*;
 pub use trainer::*;
+pub use multilingual::*;

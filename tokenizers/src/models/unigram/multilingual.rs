@@ -253,7 +253,7 @@ impl MultiUnigramTrainer {
         &self,
         sentences: &[Sentence],
         _progress: &Option<ProgressBar>,
-    ) -> Result<Vec<SentencePiece>> {
+    ) -> Vec<SentencePiece> {
         // Put all sentences in a string, separated by \0
         let total: usize = sentences
             .iter()
@@ -337,7 +337,7 @@ impl MultiUnigramTrainer {
             }
         }
         to_log_prob(&mut seed_sentencepieces);
-        Ok(seed_sentencepieces)
+        seed_sentencepieces
     }
     fn prune_sentence_pieces(
         &self,
@@ -619,7 +619,7 @@ impl MultiUnigramTrainer {
 
         // We use a UNK token when training, whatever the `self.unk_token`
         pieces.push(("<UNK>".into(), vec![f64::NAN; self.num_inputs]));
-        pieces.extend(self.make_seed_sentence_pieces(&sentences, &progress)?);
+        pieces.extend(self.make_seed_sentence_pieces(&sentences, &progress));
         self.finalize_progress(&progress, sentences.len());
 
         // Useful to check compatibility with spm.
@@ -769,8 +769,7 @@ mod tests {
 
         let progress = None;
         let mut table = trainer
-            .make_seed_sentence_pieces(&sentences, &progress)
-            .unwrap();
+            .make_seed_sentence_pieces(&sentences, &progress);
         table.sort_by_key(|(string, _)| string.to_owned());
 
         let target_strings = vec![
