@@ -12,7 +12,7 @@ use std::ops::{Add, AddAssign, DivAssign};
 // input dimensions (e.g. different languages).
 type WordCounter = HashMap<String, Vec<u32>>;
 
-// A token and a score vector
+// A token and a score vector --- TODO [MB]: I think this should never be a vector
 type SentencePiece = (String, Vec<f64>);
 
 // A full sentence or word + its counts within the dataset
@@ -429,11 +429,8 @@ impl MultiUnigramTrainer {
                     elementwise_add_inplace(&mut f, &score);
                 }
                 // TODO: Temporary hack to avoid Nans.
-                /* TODO [MB]: .all() or .any()?  My intuition is that single
-                  zeros should be okay (likely even), while a single NaN on one
-                  dimension would have to be checked for everywhere later.
-                */
-                if f.iter().all(|&x| x == 0.0) || f.iter().any(|&x| x.is_nan()) {
+                /* TODO [MB]: .all() or .any()? */
+                if f.iter().all(|&x| x == 0.0) || f.iter().all(|&x| x.is_nan()) {
                     // new_pieces.push((token.to_string(), *score));
                     continue;
                 }
@@ -457,7 +454,7 @@ impl MultiUnigramTrainer {
                     .collect();
                 //let logsum_alt = (sum + freq[id] * (alternatives.len() - 1) as f64).ln();
 
-                // The frequencies of altenatives are increased by freq[i].
+                // The frequencies of alternatives are increased by freq[i].
                 let mut logprob_alt = vec![0.0; self.num_inputs];
                 for n in &alternatives[id] {
                     let logprob_n = elementwise_add(&freq[*n], &freq[id])
@@ -539,19 +536,29 @@ impl MultiUnigramTrainer {
             .map(|(_a, b)| b)
             .fold(vec![0; self.num_inputs], |acc, v| elementwise_add(&acc, &v));
 
-        // TODO reparallelize this.
         // TODO [MB]: is this correct?
         for (string, freq_vec) in sentences {
+            // TODO [MB]: I suspect this shouldn't have separate calls/expected
+            // values/etc. for each input, because we're still training a
+            // _joint_ model on all of these inputs ...
             for (i, freq) in freq_vec.iter().enumerate() {
-                //if freq == 0 {
+                //if *freq == 0 {
                 //    continue;
                 //}
 
                 let mut lattice = Lattice::from(string, model.bos_id, model.eos_id);
                 model.populate_nodes(&mut lattice);
+                let mut d_expected = expected[i].clone();
                 let z: f64 = lattice.populate_marginal(*freq as f64, &mut expected[i]);
                 ntokens += lattice.viterbi().len() as u32;
                 if z.is_nan() {
+                    debug!("Going to panic on string '{}', idx {}, freq {}",
+                           &string, i, freq);
+                    let mut d_lattice = Lattice::from(string, model.bos_id, model.eos_id);
+                    debug!("{}", d_lattice);
+                    model.populate_nodes(&mut d_lattice);
+                    debug!("{}", d_lattice);
+                    
                     panic!("likelihood is NAN. Input sentence may be too long.");
                 }
 
@@ -630,7 +637,8 @@ impl MultiUnigramTrainer {
         );
 
         let desired_vocab_size: usize = (self.vocab_size as usize * 11) / 10; // * 1.1
-        assert!(desired_vocab_size > pieces.len());
+
+        //assert!(desired_vocab_size < pieces.len());
 
         // 2. Run E-M Loops to fine grain the pieces.
         // We will shrink the vocab by shrinking_factor every loop on average
