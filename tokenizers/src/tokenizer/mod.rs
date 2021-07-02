@@ -1033,6 +1033,85 @@ where
         Ok(self)
     }
 
+    /// Train our Model from files
+    pub fn train_from_files_indexed<T>(&mut self, trainer: &mut T, files: Vec<String>) -> Result<&mut Self>
+    where
+        T: Trainer<Model = M> + Sync,
+    {
+        let mut len = 0;
+        for file in files.iter() {
+            len += File::open(file)
+                .and_then(|f| f.metadata())
+                .map(|m| m.len())?;
+        }
+
+        let max_read = 1_000_000;
+
+        ResultShunt::process(
+            files.into_iter().enumerate().flat_map(|(idx, filename)| {
+                match File::open(filename) {
+                    Ok(file) => {
+                        let file = BufReader::with_capacity(max_read, file);
+                        // We read new lines using this API instead of the Lines Iterator
+                        // on purpose. We want to keep the `\n` and potential `\r` between each lines
+                        // We use an iterator to be able to chain with par_bridge.
+                        itertools::Either::Left(
+                            file.lines_with_ending()
+                                .map(move |seq| { seq.map(|s| { (idx, s) } ) })
+                            //std::iter::repeat(idx).zip(file.lines_with_ending())
+                        )
+                    }
+                    Err(e) => itertools::Either::Right(std::iter::once(Err(e))),
+                }
+            }),
+            |sequences| -> Result<()> {
+                let progress = if trainer.should_show_progress() {
+                    let progress = ProgressBar::new(len);
+                    progress.set_style(
+                        ProgressStyle::default_bar()
+                            .template("[{elapsed_precise}] {msg:<40!} {wide_bar} {percent:>18!}%"),
+                    );
+                    progress
+                        .set_message(&format!("Pre-processing files ({:.2} Mo)", len / 1_000_000));
+                    progress.set_draw_delta(len / 100); // Redraw only every 2%
+                    Some(progress)
+                } else {
+                    None
+                };
+
+                trainer.feed(
+                    sequences.map(|(idx, s)| {
+                        if let Some(progress) = &progress {
+                            progress.inc(s.len() as u64)
+                        }
+                        // this may be the biggest sin I've committed in a long
+                        // while, but we can't make Trainer accept a tuple (idx, s)
+                        // without refactoring ALL the Trainer objects everywhere
+                        format!("{:04}{}", idx, s)
+                    }),
+                    |seq| {
+                        let normalized = self.do_normalize(seq.as_ref())?;
+                        let pre_tokenized = self.do_pre_tokenize(normalized)?;
+                        Ok(pre_tokenized
+                            .get_splits(OffsetReferential::Original, OffsetType::Byte)
+                            .into_iter()
+                            .map(|(s, _, _)| s.to_owned())
+                            .collect())
+                    },
+                )?;
+
+                if let Some(pbar) = progress {
+                    pbar.finish();
+                }
+                let special_tokens = trainer.train(&mut self.model)?;
+                self.add_special_tokens(&special_tokens);
+
+                Ok(())
+            },
+        )??;
+        Ok(self)
+    }
+
     /// Train our Model, using the given Trainer and iterator
     pub fn train<T, I, S>(&mut self, trainer: &mut T, sequences: I) -> Result<&mut Self>
     where

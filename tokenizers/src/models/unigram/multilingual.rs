@@ -718,27 +718,31 @@ impl Trainer for MultiUnigramTrainer {
     {
         let words: Result<WordCounter> = iterator
             .maybe_par_bridge()
-            .map(|sequence| {
-                let words = process(sequence.as_ref())?;
-                let mut map = HashMap::new();
+            .map(|sequence_with_index| {
+                // this may be the biggest sin I've committed in a long while
+                let idx: usize = sequence_with_index.as_ref()[..4].parse().unwrap();
+                let sequence = &sequence_with_index.as_ref()[4..];
+                let words = process(sequence)?;
+                let mut map = HashMap::<String, Vec<u32>>::new();
                 for word in words {
-                    map.entry(word).and_modify(|c| *c += 1).or_insert(1);
+                    map.entry(word)
+                        .and_modify(|c| c[idx] += 1)
+                        .or_insert(onehot_u32(self.num_inputs, idx, 1));
                 }
                 Ok(map)
             })
-            .collect::<Result<Vec<_>>>()?
-            .iter()
-            .enumerate()
-            .fold(Ok(HashMap::new()), |acc, en| {
-                let (i, ws) = en;
-                let mut acc = acc?;
-                for (k, v) in ws {
-                    acc.entry(k.to_string())
-                        .and_modify(|c| c[i] += v)
-                        .or_insert(onehot_u32(self.num_inputs, i, *v));
-                }
-                Ok(acc)
-            });
+            .reduce(
+                || Ok(HashMap::new()),
+                |acc, ws| {
+                    let mut acc = acc?;
+                    for (k, v) in ws? {
+                        acc.entry(k)
+                            .and_modify(|c| elementwise_add_inplace(c, &v))
+                            .or_insert(v);
+                    }
+                    Ok(acc)
+                },
+            );
 
         self.words = words?;
         Ok(())
