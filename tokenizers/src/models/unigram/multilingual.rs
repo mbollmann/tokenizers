@@ -572,13 +572,14 @@ impl MultiUnigramTrainer {
             Vec::with_capacity(self.vocab_size.try_into().unwrap());
 
         let mut sum: f64 = 0.0;
-        for (i, (freq, (piece, _score))) in expected.iter().zip(pieces).enumerate() {
+        for (i, (piece, _score)) in pieces.iter().enumerate() {
             // Always keep unk.
             if i == 0 {
                 new_pieces.push((piece.clone(), f64::NAN));
                 continue;
             }
-            if self.combinator.is_below_threshold(freq) {
+            let freq = expected.iter().map(|v| v[i]).collect();
+            if self.combinator.is_below_threshold(&freq) {
                 continue;
             }
             new_pieces.push((piece.clone(), freq.iter().sum())); // TODO[MB]: ??
@@ -672,7 +673,7 @@ impl MultiUnigramTrainer {
         }
         self.finalize_progress(&progress, expected_updates);
 
-        // Finally, adjusts the size of sentencepices to be |vocab_size|.
+        // Finally, adjusts the size of sentencepieces to be |vocab_size|.
         *model = self.finalize(new_model, required_chars)?;
 
         Ok(self.special_tokens.clone())
