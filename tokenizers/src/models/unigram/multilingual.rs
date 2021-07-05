@@ -12,8 +12,8 @@ use std::ops::{Add, AddAssign, DivAssign};
 // input dimensions (e.g. different languages).
 type WordCounter = HashMap<String, Vec<u32>>;
 
-// A token and a score vector --- TODO [MB]: I think this should never be a vector
-type SentencePiece = (String, Vec<f64>);
+// A token and a score
+type SentencePiece = (String, f64);
 
 // A full sentence or word + its counts within the dataset
 type Sentence = (String, Vec<u32>);
@@ -59,23 +59,10 @@ fn onehot_u32(size: usize, idx: usize, val: u32) -> Vec<u32> {
 }
 
 fn to_log_prob(pieces: &mut [SentencePiece]) {
-    let sum: Vec<f64> =
-        pieces
-            .iter()
-            .map(|(_, score_vec)| score_vec)
-            .fold(Vec::new(), |mut acc, v| {
-                if v.len() > acc.len() {
-                    acc.resize(v.len(), 0.0);
-                }
-                elementwise_add(&acc, &v)
-            });
-    let logsum: Vec<f64> = sum.iter().map(|n| n.ln()).collect();
+    let sum: f64 = pieces.iter().map(|(_, score)| score).sum();
+    let logsum = sum.ln();
     for (_, score) in pieces.iter_mut() {
-        *score = score
-            .iter()
-            .zip(logsum.iter())
-            .map(|(a, b)| a.ln() - b)
-            .collect();
+        *score = score.ln() - logsum;
     }
 }
 
@@ -88,6 +75,7 @@ fn to_vec_f64(x: &Vec<u32>) -> Vec<f64> {
 pub enum InputCombinator {
     Sum,
     Average,
+    Max,
 }
 
 impl InputCombinator {
@@ -95,6 +83,7 @@ impl InputCombinator {
         let f = match self {
             InputCombinator::Sum => |x: &Vec<f64>| x.iter().sum(),
             InputCombinator::Average => |x: &Vec<f64>| x.iter().sum::<f64>() / x.len() as f64,
+            InputCombinator::Max => |x: &Vec<f64>| x.iter().cloned().fold(f64::NAN, f64::max),
         };
         f(x)
     }
@@ -131,7 +120,7 @@ pub struct MultiUnigramTrainer {
     pub max_piece_length: usize,
     #[builder(default = "1")]
     pub num_inputs: usize,
-    #[builder(default = "InputCombinator::Sum")]
+    #[builder(default = "InputCombinator::Max")]
     pub combinator: InputCombinator,
     #[builder(default = "1_000_000")]
     seed_size: usize,
@@ -311,7 +300,8 @@ impl MultiUnigramTrainer {
 
         // Fill seed_sentencepieces
         for (count, character) in sall_chars {
-            seed_sentencepieces.push((character.to_string(), to_vec_f64(&count)));
+            seed_sentencepieces.push((character.to_string(), count.iter().sum::<u32>().into()));
+            // TODO[MB]: ??
         }
 
         // sort by decreasing score
@@ -331,7 +321,7 @@ impl MultiUnigramTrainer {
               algorithm (or maybe a brute-force alternative) separately for
               each input file.
             */
-            seed_sentencepieces.push((string, vec![score.into(); self.num_inputs]));
+            seed_sentencepieces.push((string, score.into()));
             if seed_sentencepieces.len() >= self.seed_size {
                 break;
             }
@@ -420,20 +410,21 @@ impl MultiUnigramTrainer {
                 continue;
             } else if alternatives[id].is_empty() {
                 // no alternatives. Keeps this entry.
-                new_pieces.push((token.to_string(), score.to_vec()));
+                new_pieces.push((token.to_string(), *score));
             } else {
                 let mut f = vec![0.0; self.num_inputs]; // the frequency of pieces[i];
 
                 for n in &inverted[id] {
-                    let score = to_vec_f64(&sentences[*n].1);
-                    elementwise_add_inplace(&mut f, &score);
+                    let score_vec = to_vec_f64(&sentences[*n].1);
+                    elementwise_add_inplace(&mut f, &score_vec);
                 }
-                // TODO: Temporary hack to avoid Nans.
-                /* TODO [MB]: .all() or .any()? */
                 if f.iter().all(|&x| x == 0.0) || f.iter().all(|&x| x.is_nan()) {
                     // new_pieces.push((token.to_string(), *score));
                     continue;
                 }
+
+                // NOTE [MB]: f may (and often WILL) contain zeros and NaNs!
+
                 // normalizes by all sentence frequency:
                 elementwise_div_inplace(&mut f, &vsum);
                 let logprob_sp: Vec<f64> = freq[id]
@@ -548,17 +539,18 @@ impl MultiUnigramTrainer {
 
                 let mut lattice = Lattice::from(string, model.bos_id, model.eos_id);
                 model.populate_nodes(&mut lattice);
-                let mut d_expected = expected[i].clone();
                 let z: f64 = lattice.populate_marginal(*freq as f64, &mut expected[i]);
                 ntokens += lattice.viterbi().len() as u32;
                 if z.is_nan() {
-                    debug!("Going to panic on string '{}', idx {}, freq {}",
-                           &string, i, freq);
+                    debug!(
+                        "Going to panic on string '{}', idx {}, freq {}",
+                        &string, i, freq
+                    );
                     let mut d_lattice = Lattice::from(string, model.bos_id, model.eos_id);
                     debug!("{}", d_lattice);
                     model.populate_nodes(&mut d_lattice);
                     debug!("{}", d_lattice);
-                    
+
                     panic!("likelihood is NAN. Input sentence may be too long.");
                 }
 
@@ -579,35 +571,27 @@ impl MultiUnigramTrainer {
         let mut new_pieces: Vec<SentencePiece> =
             Vec::with_capacity(self.vocab_size.try_into().unwrap());
 
-        let mut sum = vec![0.0; self.num_inputs];
+        let mut sum: f64 = 0.0;
         for (i, (freq, (piece, _score))) in expected.iter().zip(pieces).enumerate() {
             // Always keep unk.
             if i == 0 {
-                new_pieces.push((piece.clone(), vec![f64::NAN; self.num_inputs]));
+                new_pieces.push((piece.clone(), f64::NAN));
                 continue;
             }
             if self.combinator.is_below_threshold(freq) {
                 continue;
             }
-            new_pieces.push((piece.clone(), freq.to_vec()));
-            elementwise_add_inplace(&mut sum, freq);
+            new_pieces.push((piece.clone(), freq.iter().sum())); // TODO[MB]: ??
+            sum += freq.iter().sum::<f64>();
         }
         // // Here we do not use the original EM, but use the
         // // Bayesianified/DPified EM algorithm.
         // // https://cs.stanford.edu/~pliang/papers/tutorial-acl2007-talk.pdf
         // // This modification will act as a sparse prior.
-        let logsum: Vec<_> = sum.into_iter().map(|n| digamma(n)).collect();
+        let logsum = digamma(sum);
         let new_pieces: Vec<_> = new_pieces
             .into_iter()
-            .map(|(s, c)| {
-                (
-                    s,
-                    c.iter()
-                        .zip(logsum.iter())
-                        .map(|(n, m)| digamma(*n) - m)
-                        .collect(),
-                )
-            })
+            .map(|(s, c)| (s, digamma(c) - logsum))
             .collect();
         new_pieces
     }
@@ -625,7 +609,7 @@ impl MultiUnigramTrainer {
             Vec::with_capacity(self.vocab_size.try_into().unwrap());
 
         // We use a UNK token when training, whatever the `self.unk_token`
-        pieces.push(("<UNK>".into(), vec![f64::NAN; self.num_inputs]));
+        pieces.push(("<UNK>".into(), f64::NAN));
         pieces.extend(self.make_seed_sentence_pieces(&sentences, &progress));
         self.finalize_progress(&progress, sentences.len());
 
@@ -651,12 +635,7 @@ impl MultiUnigramTrainer {
         let expected_updates = expected_loops as usize * self.n_sub_iterations as usize;
         self.update_progress(&progress, expected_updates, "EM training");
         let required_chars = self.required_chars(&sentences);
-        let clone_and_reduce = |pcs: &Vec<SentencePiece>| -> Vec<(String, f64)> {
-            pcs.iter()
-                .map(|(p, v)| (p.clone(), self.combinator.reduce(v)))
-                .collect()
-        };
-        let mut new_model = Unigram::from(clone_and_reduce(&pieces), Some(0))?;
+        let mut new_model = Unigram::from(pieces.clone(), Some(0))?;
         loop {
             // Sub-EM iteration.
             for _iter in 0..self.n_sub_iterations {
@@ -665,7 +644,7 @@ impl MultiUnigramTrainer {
 
                 // Executes M step.
                 pieces = self.run_m_step(&pieces, &expected);
-                new_model = Unigram::from(clone_and_reduce(&pieces), Some(0))?;
+                new_model = Unigram::from(pieces.clone(), Some(0))?;
 
                 // Useful comment for checking compatibility with spm
                 debug!(
@@ -689,7 +668,7 @@ impl MultiUnigramTrainer {
 
             // Prunes pieces.
             pieces = self.prune_sentence_pieces(&new_model, &pieces, &sentences);
-            new_model = Unigram::from(clone_and_reduce(&pieces), Some(0))?;
+            new_model = Unigram::from(pieces.clone(), Some(0))?;
         }
         self.finalize_progress(&progress, expected_updates);
 
@@ -780,8 +759,7 @@ mod tests {
         assert_eq!(required_chars.len(), 13);
 
         let progress = None;
-        let mut table = trainer
-            .make_seed_sentence_pieces(&sentences, &progress);
+        let mut table = trainer.make_seed_sentence_pieces(&sentences, &progress);
         table.sort_by_key(|(string, _)| string.to_owned());
 
         let target_strings = vec![
@@ -847,24 +825,5 @@ mod tests {
         let mut pieces = unigram.iter();
         assert_eq!(pieces.next(), Some(&("[SEP]".into(), 0.0)));
         assert_eq!(pieces.next(), Some(&("[CLS]".into(), 0.0)));
-    }
-
-    #[test]
-    fn test_to_log_prob() {
-        let mut a = vec![
-            ("".to_string(), vec![1.0, 2.0]),
-            ("".to_string(), vec![2.0, 1.0]),
-        ];
-        to_log_prob(&mut a);
-        let scores = a
-            .iter()
-            .map(|(_, score)| score.to_vec())
-            .collect::<Vec<_>>();
-        // ln(1) - ln(3)
-        assert_approx_eq!(scores[0][0], -1.098, 0.01);
-        assert_approx_eq!(scores[1][1], -1.098, 0.01);
-        // ln(2) - ln(3)
-        assert_approx_eq!(scores[1][0], -0.405, 0.01);
-        assert_approx_eq!(scores[0][1], -0.405, 0.01);
     }
 }
