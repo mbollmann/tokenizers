@@ -204,7 +204,7 @@ impl PyWordPieceDec {
 ///         Whether to add a space to the first word if there isn't already one. This
 ///         lets us treat `hello` exactly like `say hello`.
 #[pyclass(extends=PyDecoder, module = "tokenizers.decoders", name=Metaspace)]
-#[text_signature = "(self, replacement = \"▁\", add_prefix_space = True)"]
+#[text_signature = "(self, replacement = \"▁\", add_prefix_space = True, use_byte_level = False)"]
 pub struct PyMetaspaceDec {}
 #[pymethods]
 impl PyMetaspaceDec {
@@ -228,12 +228,22 @@ impl PyMetaspaceDec {
         setter!(self_, Metaspace, add_prefix_space, add_prefix_space);
     }
 
+    #[getter]
+    fn get_use_byte_level(self_: PyRef<Self>) -> bool {
+        getter!(self_, Metaspace, use_byte_level)
+    }
+
+    #[setter]
+    fn set_use_byte_level(self_: PyRef<Self>, use_byte_level: bool) {
+        setter!(self_, Metaspace, use_byte_level, use_byte_level);
+    }
+
     #[new]
-    #[args(replacement = "PyChar('▁')", add_prefix_space = "true")]
-    fn new(replacement: PyChar, add_prefix_space: bool) -> (Self, PyDecoder) {
+    #[args(replacement = "PyChar('▁')", add_prefix_space = "true", use_byte_level = "false")]
+    fn new(replacement: PyChar, add_prefix_space: bool, use_byte_level: bool) -> (Self, PyDecoder) {
         (
             PyMetaspaceDec {},
-            Metaspace::new(replacement.0, add_prefix_space).into(),
+            Metaspace::new(replacement.0, add_prefix_space).with_byte_level(use_byte_level).into(),
         )
     }
 }

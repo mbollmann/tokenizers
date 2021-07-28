@@ -111,7 +111,7 @@ class Metaspace(Decoder):
             lets us treat `hello` exactly like `say hello`.
     """
 
-    def __init__(self, replacement="▁", add_prefix_space=True):
+    def __init__(self, replacement="▁", add_prefix_space=True, use_byte_level=False):
         pass
     def decode(self, tokens):
         """

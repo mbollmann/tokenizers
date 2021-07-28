@@ -439,7 +439,7 @@ impl PySequence {
 ///         Whether to add a space to the first word if there isn't already one. This
 ///         lets us treat `hello` exactly like `say hello`.
 #[pyclass(extends=PyPreTokenizer, module = "tokenizers.pre_tokenizers", name=Metaspace)]
-#[text_signature = "(self, replacement=\"_\", add_prefix_space=True)"]
+#[text_signature = "(self, replacement=\"_\", add_prefix_space=True, use_byte_level=False)"]
 pub struct PyMetaspace {}
 #[pymethods]
 impl PyMetaspace {
@@ -463,16 +463,27 @@ impl PyMetaspace {
         setter!(self_, Metaspace, add_prefix_space, add_prefix_space);
     }
 
+    #[getter]
+    fn get_use_byte_level(self_: PyRef<Self>) -> bool {
+        getter!(self_, Metaspace, use_byte_level)
+    }
+
+    #[setter]
+    fn set_use_byte_level(self_: PyRef<Self>, use_byte_level: bool) {
+        setter!(self_, Metaspace, use_byte_level, use_byte_level);
+    }
+
     #[new]
-    #[args(replacement = "PyChar('▁')", add_prefix_space = "true", _kwargs = "**")]
+    #[args(replacement = "PyChar('▁')", add_prefix_space = "true", use_byte_level = "false", _kwargs = "**")]
     fn new(
         replacement: PyChar,
         add_prefix_space: bool,
+        use_byte_level: bool,
         _kwargs: Option<&PyDict>,
     ) -> (Self, PyPreTokenizer) {
         (
             PyMetaspace {},
-            Metaspace::new(replacement.0, add_prefix_space).into(),
+            Metaspace::new(replacement.0, add_prefix_space).with_byte_level(use_byte_level).into(),
         )
     }
 }
