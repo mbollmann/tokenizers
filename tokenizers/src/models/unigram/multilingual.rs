@@ -10,13 +10,13 @@ use std::ops::{Add, AddAssign, DivAssign};
 
 // A counter keeping track of word frequencies, but separately for different
 // input dimensions (e.g. different languages).
-type WordCounter = HashMap<String, Vec<u32>>;
+pub type WordCounter = HashMap<String, Vec<u32>>;
 
 // A token and a score
-type SentencePiece = (String, f64);
+pub type SentencePiece = (String, f64);
 
 // A full sentence or word + its counts within the dataset
-type Sentence = (String, Vec<u32>);
+pub type Sentence = (String, Vec<u32>);
 
 fn digamma(mut x: f64) -> f64 {
     let mut result = 0.0;
@@ -76,6 +76,7 @@ pub enum InputCombinator {
     Sum,
     Average,
     Max,
+    ExpSum,
 }
 
 impl InputCombinator {
@@ -84,6 +85,7 @@ impl InputCombinator {
             InputCombinator::Sum => |x: &Vec<f64>| x.iter().sum(),
             InputCombinator::Average => |x: &Vec<f64>| x.iter().sum::<f64>() / x.len() as f64,
             InputCombinator::Max => |x: &Vec<f64>| x.iter().cloned().fold(f64::NAN, f64::max),
+            InputCombinator::ExpSum => |x: &Vec<f64>| x.iter().map(|n| n.exp()).sum(),
         };
         f(x)
     }
@@ -195,7 +197,7 @@ impl MultiUnigramTrainer {
             }
             inserted.insert(token.to_string());
             pieces.push((token.to_string(), if score.is_nan() { 0.0 } else { *score }));
-            if pieces.len() == self.vocab_size as usize {
+            if pieces.len() >= self.vocab_size as usize {
                 break;
             }
         }
@@ -396,6 +398,8 @@ impl MultiUnigramTrainer {
         let mut new_pieces: Vec<SentencePiece> = Vec::with_capacity(self.vocab_size as usize);
         new_pieces.push(pieces[0].clone());
 
+        let mut max_logprob_sp: Vec<f64> = vec![f64::MIN; self.num_inputs];
+
         // Finally, computes how likely the LM likelihood is reduced if
         // the sentencepiece[i] is removed from the vocabulary.
         // Since the exact computation of loss is difficult, we compute the
@@ -431,6 +435,11 @@ impl MultiUnigramTrainer {
                     .iter()
                     .zip(logsum.iter())
                     .map(|(a, b)| a.ln() - b)
+                    .collect();
+                max_logprob_sp = max_logprob_sp
+                    .iter()
+                    .zip(logprob_sp.iter())
+                    .map(|(a, b)| a.max(*b))
                     .collect();
 
                 // After removing the sentencepiece[i], its frequency freq[i] is
@@ -480,10 +489,29 @@ impl MultiUnigramTrainer {
                 if loss.is_nan() {
                     panic!("");
                 }
+                if candidates.len() < 3 {
+                    let mut print_vec = String::new();
+                    for l in loss_vec.iter() {
+                        print_vec.push_str(&format!(" {:.4}", l));
+                    }
+                    debug!("Piece {:>5}: loss_vec = [{}], loss = {:.4}",
+                           id, print_vec, loss);
+                    let mut print_logprob = String::new();
+                    for l in logprob_sp.iter() {
+                        print_logprob.push_str(&format!(" {:.4}", l));
+                    }
+                    debug!("             logprob_sp = [{}]", print_logprob);
+                }
 
                 candidates.push((id, loss));
             }
         }
+        let mut print_vec = String::new();
+        for l in max_logprob_sp.iter() {
+            print_vec.push_str(&format!(" {:.4}", l));
+        }
+        debug!("max(logprob_sp) = [{}]", print_vec);
+
         let desired_vocab_size: usize = (self.vocab_size as usize * 11) / 10; // * 1.1
         let pruned_size: usize = ((pieces.len() as f64) * self.shrinking_factor) as usize;
         let pruned_size = desired_vocab_size.max(pruned_size);
@@ -638,6 +666,8 @@ impl MultiUnigramTrainer {
         let required_chars = self.required_chars(&sentences);
         let mut new_model = Unigram::from(pieces.clone(), Some(0))?;
         loop {
+            let old_len = pieces.len();
+
             // Sub-EM iteration.
             for _iter in 0..self.n_sub_iterations {
                 // Executes E step
@@ -670,6 +700,10 @@ impl MultiUnigramTrainer {
             // Prunes pieces.
             pieces = self.prune_sentence_pieces(&new_model, &pieces, &sentences);
             new_model = Unigram::from(pieces.clone(), Some(0))?;
+            if pieces.len() >= old_len {
+                eprintln!("!! Iteration did not reduce the size of the vocabulary (was {}, now {})", old_len, pieces.len());
+                break;
+            }
         }
         self.finalize_progress(&progress, expected_updates);
 
@@ -774,31 +808,29 @@ mod tests {
         /* NOTE [MB]: because we run esaxx_rs on the concatenation of all
          * inputs, the denominator for input X is always the sum of individual
          * character frequencies in X + the sum of ALL inputs' suffix pieces */
-        let target_scores = vec![
-            [-f64::INFINITY, -2.2512917986064953],    // 2.0 ÷ 19
-            [-f64::INFINITY, -2.9444389791664407],    // 1.0 ÷ 19
-            [-f64::INFINITY, -2.9444389791664407],    // 1.0
-            [-f64::INFINITY, -2.9444389791664407],    // 1.0
-            [-f64::INFINITY, -2.2512917986064953],    // 2.0
-            [-1.041453874828161, -1.152679509938385], // 6.0 ÷ (17, 19)
-            [-f64::INFINITY, -2.2512917986064953],    // 2.0
-            [-1.446918982936325, -1.558144618046550], // 4.0 ÷ (17, 19)
-            [-2.833213344056216, -f64::INFINITY],     // 1.0 ÷ 17
-            [-2.833213344056216, -f64::INFINITY],     // 1.0
-            [-2.833213344056216, -f64::INFINITY],     // 1.0
-            [-2.833213344056216, -f64::INFINITY],     // 1.0
-            [-2.833213344056216, -f64::INFINITY],     // 1.0
-            [-2.833213344056216, -f64::INFINITY],     // 1.0
-            [-2.833213344056216, -f64::INFINITY],     // 1.0
+        let target_scores: Vec<f64> = vec![
+            -2.2512917986064953,    // 2.0 ÷ 19
+            -2.9444389791664407,    // 1.0 ÷ 19
+            -2.9444389791664407,    // 1.0
+            -2.9444389791664407,    // 1.0
+            -2.2512917986064953,    // 2.0
+            -1.041453874828161, // -1.152679509938385], // 6.0 ÷ (17, 19)
+            -2.2512917986064953,    // 2.0
+            -1.446918982936325, // -1.558144618046550], // 4.0 ÷ (17, 19)
+            -2.833213344056216,     // 1.0 ÷ 17
+            -2.833213344056216,     // 1.0
+            -2.833213344056216,     // 1.0
+            -2.833213344056216,     // 1.0
+            -2.833213344056216,     // 1.0
+            -2.833213344056216,     // 1.0
+            -2.833213344056216,     // 1.0
         ];
 
-        for (score, target_score) in scores.into_iter().zip(target_scores) {
-            for (s, t) in score.iter().zip(&target_score) {
-                if t.is_infinite() {
-                    assert_eq!(s, t);
-                } else {
-                    assert_approx_eq!(s, t, 0.01);
-                }
+        for (s, t) in scores.into_iter().zip(target_scores) {
+            if t.is_infinite() {
+                assert_eq!(*s, t);
+            } else {
+                assert_approx_eq!(*s, t, 0.01);
             }
         }
     }

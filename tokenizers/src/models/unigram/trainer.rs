@@ -131,7 +131,7 @@ impl UnigramTrainer {
             }
             inserted.insert(token.to_string());
             pieces.push((token.to_string(), if score.is_nan() { 0.0 } else { *score }));
-            if pieces.len() == self.vocab_size as usize {
+            if pieces.len() >= self.vocab_size as usize {
                 break;
             }
         }
@@ -311,6 +311,8 @@ impl UnigramTrainer {
         let mut new_pieces: Vec<SentencePiece> = Vec::with_capacity(self.vocab_size as usize);
         new_pieces.push(pieces[0].clone());
 
+        let mut max_logprob_sp: f64 = f64::MIN; // the maximum logprob observed for any SentencePiece
+
         // Finally, computes how likely the LM likelihood is reduced if
         // the sentencepiece[i] is removed from the vocabulary.
         // Since the exact computation of loss is difficult, we compute the
@@ -340,6 +342,7 @@ impl UnigramTrainer {
                 }
                 f /= vsum; // normalizes by all sentence frequency.
                 let logprob_sp = freq[id].ln() - logsum;
+                max_logprob_sp = max_logprob_sp.max(logprob_sp);
 
                 // After removing the sentencepiece[i], its frequency freq[i] is
                 // re-assigned to alternatives.
@@ -348,7 +351,7 @@ impl UnigramTrainer {
 
                 let logsum_alt = (sum + freq[id] * (alternatives.len() - 1) as f64).ln();
 
-                // The frequencies of altenatives are increased by freq[i].
+                // The frequencies of alternatives are increased by freq[i].
                 let mut logprob_alt = 0.0;
                 for n in &alternatives[id] {
                     logprob_alt += (freq[*n] + freq[id]).ln() - logsum_alt;
@@ -359,17 +362,21 @@ impl UnigramTrainer {
                 if loss.is_nan() {
                     panic!("");
                 }
+                if candidates.len() < 3 {
+                    debug!("Piece {:>5}: loss = {:.4}, logprob_sp = {:.4}", id, loss, logprob_sp);
+                }
 
                 candidates.push((id, loss));
             }
         }
+        debug!("max(logprob_sp) = {:.4}", max_logprob_sp);
         let desired_vocab_size: usize = (self.vocab_size as usize * 11) / 10; // * 1.1
         let pruned_size: usize = ((pieces.len() as f64) * self.shrinking_factor) as usize;
         let pruned_size = desired_vocab_size.max(pruned_size);
 
         candidates.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap());
         for (id, _score) in candidates {
-            if new_pieces.len() == pruned_size {
+            if new_pieces.len() >= pruned_size {
                 break;
             }
             new_pieces.push(pieces[id].clone());
@@ -381,8 +388,8 @@ impl UnigramTrainer {
     /// Update the progress bar with the new provided length and message
     fn update_progress(&self, p: &Option<ProgressBar>, len: usize, message: &str) {
         if let Some(p) = p {
-            p.set_message(message);
             p.set_length(len as u64);
+            p.set_message(message);
             p.set_draw_delta(len as u64 / 100);
             p.reset();
         }
@@ -494,6 +501,8 @@ impl UnigramTrainer {
         let required_chars = self.required_chars(&sentences);
         let mut new_model = Unigram::from(pieces.clone(), Some(0))?;
         loop {
+            let old_len = pieces.len();
+
             // Sub-EM iteration.
             for _iter in 0..self.n_sub_iterations {
                 // Executes E step
@@ -526,6 +535,10 @@ impl UnigramTrainer {
             // Prunes pieces.
             pieces = self.prune_sentence_pieces(&new_model, &pieces, &sentences);
             new_model = Unigram::from(pieces.clone(), Some(0))?;
+            if pieces.len() >= old_len {
+                eprintln!("!! Iteration did not reduce the size of the vocabulary (was {}, now {})", old_len, pieces.len());
+                break;
+            }
         }
         self.finalize_progress(&progress, expected_updates);
 
