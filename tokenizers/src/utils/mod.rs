@@ -21,6 +21,7 @@ where
     ordered.serialize(serializer)
 }
 
+#[allow(unused_attributes)]
 #[macro_use]
 macro_rules! impl_enum_from (
     ($from_ty:ty, $enum:ty, $variant:ident) => {
@@ -32,6 +33,7 @@ macro_rules! impl_enum_from (
     }
 );
 
+#[allow(unused_attributes)]
 #[macro_use]
 macro_rules! impl_serde_unit_struct (
     ($visitor:ident, $self_ty:tt) => {
