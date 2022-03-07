@@ -19,6 +19,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use flate2::read::GzDecoder;
+
+fn ends_in_gzip(filename: &str) -> bool {
+    return filename.ends_with(".gz") || filename.ends_with(".gzip");
+}
+trait ReadSend: Read + Send {}
+impl<T> ReadSend for T where T: Read + Send {}
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -968,7 +976,7 @@ where
     {
         let mut len = 0;
         for file in files.iter() {
-            len += File::open(file)
+            len += File::open(file)  // this is broken for gzip files for now
                 .and_then(|f| f.metadata())
                 .map(|m| m.len())?;
         }
@@ -977,13 +985,19 @@ where
 
         ResultShunt::process(
             files.into_iter().flat_map(|filename| {
+                let is_gzip = ends_in_gzip(&filename);
                 match File::open(filename) {
                     Ok(file) => {
-                        let file = BufReader::with_capacity(max_read, file);
+                        let file: Box<dyn ReadSend> = if is_gzip {
+                            Box::new(GzDecoder::new(file))
+                        } else {
+                            Box::new(file)
+                        };
+                        let reader = BufReader::with_capacity(max_read, file);
                         // We read new lines using this API instead of the Lines Iterator
                         // on purpose. We want to keep the `\n` and potential `\r` between each lines
                         // We use an iterator to be able to chain with par_bridge.
-                        itertools::Either::Left(file.lines_with_ending())
+                        itertools::Either::Left(reader.lines_with_ending())
                     }
                     Err(e) => itertools::Either::Right(std::iter::once(Err(e))),
                 }
@@ -1040,7 +1054,7 @@ where
     {
         let mut len = 0;
         for file in files.iter() {
-            len += File::open(file)
+            len += File::open(file)  // this is broken for gzip files for now
                 .and_then(|f| f.metadata())
                 .map(|m| m.len())?;
         }
@@ -1049,15 +1063,21 @@ where
 
         ResultShunt::process(
             files.into_iter().enumerate().flat_map(|(idx, filename)| {
+                let is_gzip = ends_in_gzip(&filename);
                 match File::open(filename) {
                     Ok(file) => {
-                        let file = BufReader::with_capacity(max_read, file);
+                        let file: Box<dyn ReadSend> = if is_gzip {
+                            Box::new(GzDecoder::new(file))
+                        } else {
+                            Box::new(file)
+                        };
+                        let reader = BufReader::with_capacity(max_read, file);
                         // We read new lines using this API instead of the Lines Iterator
                         // on purpose. We want to keep the `\n` and potential `\r` between each lines
                         // We use an iterator to be able to chain with par_bridge.
                         itertools::Either::Left(
-                            file.lines_with_ending()
-                                .map(move |seq| { seq.map(|s| { (idx, s) } ) })
+                            reader.lines_with_ending()
+                                  .map(move |seq| { seq.map(|s| { (idx, s) } ) })
                             //std::iter::repeat(idx).zip(file.lines_with_ending())
                         )
                     }

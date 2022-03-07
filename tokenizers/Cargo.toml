@@ -53,6 +53,7 @@ log = "0.4"
 esaxx-rs = "0.1"
 derive_builder = "0.9"
 spm_precompiled = "0.1"
+flate2 = "1.0"
 
 [features]
 default = ["progressbar"]
